@@ -673,11 +673,9 @@ if __name__ == "__main__":
         lightning_config.trainer = trainer_config
 
         # model
-        use_fp16 = trainer_config.get("precision", 32) == 16
-        if use_fp16:
-            config.model["params"].update({"use_fp16": True})
-        else:
-            config.model["params"].update({"use_fp16": False})
+        precision = str(trainer_config.get("precision"))
+        config.model["params"].update({"precision": precision})
+
 
         if ckpt is not None:
             # If a checkpoint path is specified in the ckpt variable, the code updates the "ckpt" key in the "params" dictionary of the config.model configuration with the value of ckpt

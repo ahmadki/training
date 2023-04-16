@@ -86,7 +86,7 @@ class DDPM(pl.LightningModule):
                  use_positional_encodings=False,
                  learn_logvar=False,
                  logvar_init=0.,
-                 use_fp16=True,
+                 precision='16',
                  make_it_fit=False,
                  ucg_training=None,
                  reset_ema=False,
@@ -167,7 +167,7 @@ class DDPM(pl.LightningModule):
         self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
-        self.use_fp16 = use_fp16
+        self.precision = precision
         self.ucg_training = ucg_training or dict()
         if self.ucg_training:
             self.ucg_prng = np.random.RandomState()
@@ -460,8 +460,10 @@ class DDPM(pl.LightningModule):
         if len(x.shape) == 3:
             x = x[..., None]
         x = rearrange(x, 'b h w c -> b c h w')
-        if self.use_fp16:
+        if self.precision == '16':
             x = x.to(memory_format=torch.contiguous_format).half()
+        elif self.precision == 'bf16':
+            x = x.to(memory_format=torch.contiguous_format, dtype=th.bfloat16)
         else:
             x = x.to(memory_format=torch.contiguous_format).float()
         return x
@@ -574,7 +576,7 @@ class LatentDiffusion(DDPM):
                  conditioning_key=None,
                  scale_factor=1.0,
                  scale_by_std=False,
-                 use_fp16=True,
+                 precision='16',
                  force_null_conditioning=False,
                  *args,
                  **kwargs):
@@ -608,6 +610,7 @@ class LatentDiffusion(DDPM):
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
+        self.precision = precision
         '''
         Uncomment if you Use DDP Strategy
         '''
@@ -746,7 +749,13 @@ class LatentDiffusion(DDPM):
             z = encoder_posterior
         else:
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
-        return self.scale_factor * z.half() if self.use_fp16 else self.scale_factor * z
+        
+        if self.precision == '32':
+            return self.scale_factor * z
+        elif self.precision == 'bf16':
+            return self.scale_factor * z.to(dtype=th.bfloat16)
+        else:
+            return self.scale_factor * z.half() 
 
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:

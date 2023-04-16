@@ -106,13 +106,16 @@ class Upsample(nn.Module):
             self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=padding)
 
     def forward(self, x):
+        # currently, torch doesn't support bf16 interpolate
+        if x.dtype == th.bfloat16:
+            x = x.float()
         assert x.shape[1] == self.channels
         if self.dims == 3:
-            x = F.interpolate(
-                x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
-            )
+            x = F.interpolate(x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest")
         else:
             x = F.interpolate(x, scale_factor=2, mode="nearest")
+        if x.dtype == th.bfloat16:
+            x = x.to(dtype=th.bfloat16)
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -453,7 +456,7 @@ class UNetModel(nn.Module):
         dims=2,
         num_classes=None,
         use_checkpoint=False,
-        use_fp16=False,
+        precision='16',
         num_heads=-1,
         num_head_channels=-1,
         num_heads_upsample=-1,
@@ -517,11 +520,16 @@ class UNetModel(nn.Module):
         self.conv_resample = conv_resample
         self.num_classes = num_classes
         self.use_checkpoint = use_checkpoint
-        self.dtype = th.float16 if use_fp16 else th.float32
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         self.predict_codebook_ids = n_embed is not None
+        
+        self.dtype = th.float32
+        if precision == '16':
+            self.dtype = th.float16
+        elif precision == 'bf16':
+            self.dtype == th.bfloat16
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
