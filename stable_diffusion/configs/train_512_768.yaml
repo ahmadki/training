@@ -21,7 +21,7 @@ model:
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [ 10000 ]
+        warm_up_steps: [ 1 ]
         cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
         f_start: [ 1.e-6 ]
         f_max: [ 1.e-4 ]
@@ -84,7 +84,7 @@ data:
       train:
         target: ldm.data.webdatasets.build_webdataloader
         params:
-          urls: /datasets/laion2B-en-aesthetic/{00000..00004}.tar
+          urls: /datasets/laion2B-en-aesthetic/{00000..05247}.tar
           batch_size: 8
           shuffle: 1000
           partial: False
@@ -99,7 +99,7 @@ data:
             - target: torchvision.transforms.ToTensor
             - target: torchvision.transforms.RandomResizedCrop
               params:
-                size: 512
+                size: 768
                 interpolation: bicubic
             # TODO(ahmadki): modify the SD pieline to take chw format (what pytorch nativly uses)
             - target: ldm.data.webdatasets.rearrange_transform
@@ -134,5 +134,5 @@ lightning:
     target: lightning.pytorch.callbacks.ModelCheckpoint
     params:
       save_top_k: -1
-      every_n_train_steps: 1500
+      every_n_train_steps: 200
       #  train_time_interval: None
