@@ -348,6 +348,17 @@ class SetupCallback(Callback):
                     os.makedirs(os.path.join(self.ckptdir, 'trainstep_checkpoints'), exist_ok=True)
             print("Project config")
             print(OmegaConf.to_yaml(self.config))
+            ################################## TODO(ahmadki): debug
+            if not os.path.exists(self.cfgdir):
+                import time
+                time.sleep(5)
+                os.makedirs(self.logdir, exist_ok=True)
+                os.makedirs(self.ckptdir, exist_ok=True)
+                os.makedirs(self.cfgdir, exist_ok=True)
+                os.makedirs(self.logdir, exist_ok=True)
+                os.makedirs(self.ckptdir, exist_ok=True)
+                os.makedirs(self.cfgdir, exist_ok=True)
+            ################################## TODO(ahmadki): debug end
             OmegaConf.save(self.config, os.path.join(self.cfgdir, "{}-project.yaml".format(self.now)))
 
             # Save project config and lightning config as YAML files
@@ -761,7 +772,7 @@ if __name__ == "__main__":
                 "target": "main.LearningRateMonitor",
                 "params": {
                     "logging_interval": "step",           # logging frequency (either 'step' or 'epoch')
-                  # "log_momentum": True                  # whether to log momentum (currently commented out)
+                # "log_momentum": True                    # whether to log momentum (currently commented out)
                 }
             },
             "cuda_callback": {                            # callback to handle CUDA-related operations

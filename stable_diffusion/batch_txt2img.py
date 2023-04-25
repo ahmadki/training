@@ -228,13 +228,6 @@ def main(opt):
 
     model = model.to(device)
 
-    # TODO(ahmadki): enable after fixing the issue with bitsandbytes
-    # # quantize model
-    # if opt.use_int8:
-    #     model = replace_module(model)
-        # # to compute the model size
-        # getModelSize(model)
-
     if opt.plms:
         sampler = PLMSSampler(model)
     elif opt.dpm:

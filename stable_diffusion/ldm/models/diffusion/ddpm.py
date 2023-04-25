@@ -608,6 +608,7 @@ class LatentDiffusion(DDPM):
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
+        # FIXME(ahmadki): this is replaced with configure_sharded_model, but configure_sharded_model is not called ?
         '''
         Uncomment if you Use DDP Strategy
         '''
