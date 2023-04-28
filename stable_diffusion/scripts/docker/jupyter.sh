@@ -18,6 +18,7 @@ docker run --rm -it --gpus=all --ipc=host \
     -v /datasets/coco/coco2014:/datasets/coco2014 \
     -v /lfs/stable-diffusion/cache/huggingface:/root/.cache/huggingface \
     -v /lfs/stable-diffusion/results:/results \
-    -v /lfs/stable-diffusion/checkpoints:/checkpoints \
+    -v /lfs/stable-diffusion/ckpts:/ckpts \
     -e PYTHONPYCACHEPREFIX=/tmp/.pycache \
-    ${DST_IMG} bash
+    -p 8888:8888 \
+    ${DST_IMG} jupyter notebook
