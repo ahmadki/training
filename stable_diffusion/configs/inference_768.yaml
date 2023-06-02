@@ -18,6 +18,10 @@ model:
     scale_factor: 0.18215
     use_ema: False
 
+    load_vae: True
+    load_unet: True
+    load_encoder: True
+
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:

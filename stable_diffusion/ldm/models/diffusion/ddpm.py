@@ -64,6 +64,9 @@ class DDPM(pl.LightningModule):
                  beta_schedule="linear",
                  loss_type="l2",
                  ckpt=None,
+                 load_vae=True,
+                 load_unet=False,
+                 load_encoder=True,
                  ignore_keys=[],
                  load_only_unet=False,
                  monitor="val/loss",
@@ -124,6 +127,9 @@ class DDPM(pl.LightningModule):
             self.monitor = monitor
         self.make_it_fit = make_it_fit
         self.ckpt = ckpt
+        self.load_vae = load_vae
+        self.load_unet = load_unet
+        self.load_encoder = load_encoder
         self.ignore_keys = ignore_keys
         self.load_only_unet = load_only_unet
         self.reset_ema = reset_ema
@@ -131,15 +137,6 @@ class DDPM(pl.LightningModule):
 
         if reset_ema:
             assert exists(ckpt)
-        '''
-        Uncomment if you Use DDP Strategy
-        '''
-        # if ckpt is not None:
-        #     self.init_from_ckpt(ckpt, ignore_keys=ignore_keys, only_model=load_only_unet)
-        #     if reset_ema:
-        #         assert self.use_ema
-        #         rank_zero_info(f"Resetting ema to pure model weights. This is useful when restoring from an ema-only checkpoint.")
-        #         self.model_ema = LitEma(self.model)
 
         if reset_num_ema_updates:
             rank_zero_info(" +++++++++++ WARNING: RESETTING NUM_EMA UPDATES TO ZERO +++++++++++ ")
@@ -251,7 +248,7 @@ class DDPM(pl.LightningModule):
                     rank_zero_info(f"{context}: Restored training weights")
 
     @torch.no_grad()
-    def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
+    def init_from_ckpt(self, path, ignore_keys=list(), load_vae=True, load_unet=False, load_encoder=True):
         sd = torch.load(path, map_location="cpu")
         if "state_dict" in list(sd.keys()):
             sd = sd["state_dict"]
@@ -300,8 +297,28 @@ class DDPM(pl.LightningModule):
 
                     sd[name] = new_param
 
-        missing, unexpected = self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(
-            sd, strict=False)
+        if not load_vae:
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("first_stage_model"):
+                    rank_zero_info("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+
+        if not load_encoder:
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("cond_stage_model"):
+                    rank_zero_info("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+
+        if not load_unet:
+            keys = list(sd.keys())
+            for k in keys:
+                if k.startswith("model.diffusion_model"):
+                    rank_zero_info("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+
+        missing, unexpected = self.load_state_dict(sd, strict=False)
         rank_zero_info(f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
         if len(missing) > 0:
             rank_zero_info(f"Missing Keys:\n {missing}")
@@ -608,19 +625,6 @@ class LatentDiffusion(DDPM):
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
-        # FIXME(ahmadki): this is replaced with configure_sharded_model, but configure_sharded_model is not called ?
-        '''
-        Uncomment if you Use DDP Strategy
-        '''
-        # self.restarted_from_ckpt = False
-        # if self.ckpt is not None:
-        #     self.init_from_ckpt(self.ckpt, self.ignore_keys)
-        #     self.restarted_from_ckpt = True
-        #     if self.reset_ema:
-        #         assert self.use_ema
-        #         rank_zero_info(
-        #             f"Resetting ema to pure model weights. This is useful when restoring from an ema-only checkpoint.")
-        #         self.model_ema = LitEma(self.model)
         if self.reset_num_ema_updates:
             rank_zero_info(" +++++++++++ WARNING: RESETTING NUM_EMA UPDATES TO ZERO +++++++++++ ")
             assert self.use_ema
@@ -634,7 +638,8 @@ class LatentDiffusion(DDPM):
             self.model_ema = LitEma(self.model)
 
         if self.ckpt is not None:
-            self.init_from_ckpt(self.ckpt, ignore_keys=self.ignore_keys, only_model=self.load_only_unet)
+            self.init_from_ckpt(self.ckpt, ignore_keys=self.ignore_keys,
+                                load_vae=self.load_vae, load_encoder=self.load_encoder, load_unet=self.load_unet)
             if self.reset_ema:
                 assert self.use_ema
                 rank_zero_info(
@@ -657,7 +662,8 @@ class LatentDiffusion(DDPM):
         self.instantiate_first_stage(self.first_stage_config)
         self.instantiate_cond_stage(self.cond_stage_config)
         if self.ckpt is not None:
-            self.init_from_ckpt(self.ckpt, self.ignore_keys)
+            self.init_from_ckpt(self.ckpt, ignore_keys=self.ignore_keys,
+                                load_vae=self.load_vae, load_encoder=self.load_encoder, load_unet=self.load_unet)
             self.restarted_from_ckpt = True
             if self.reset_ema:
                 assert self.use_ema
