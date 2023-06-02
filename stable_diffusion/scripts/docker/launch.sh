@@ -15,6 +15,7 @@ docker run --rm -it --gpus=all --ipc=host \
     --workdir /pwd \
     -v ${PWD}:/pwd \
     -v /datasets/laion2B-en-aesthetic/webdataset:/datasets/laion2B-en-aesthetic \
+    -v /datasets/pokemon-blip-captions:/datasets/pokemon-blip-captions \ # TODO(ahmadki): delete
     -v /datasets/coco/coco2014:/datasets/coco2014 \
     -v /lfs/stable-diffusion/cache/huggingface:/root/.cache/huggingface \
     -v /lfs/stable-diffusion/results:/results \

@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-4
+  base_learning_rate: 1.0e-6
   target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
     parameterization: "v"
@@ -16,7 +16,7 @@ model:
     conditioning_key: crossattn
     monitor: steps
     scale_factor: 0.18215
-    use_ema: True
+    use_ema: False
 
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -24,8 +24,8 @@ model:
         warm_up_steps: [ 10000 ]
         cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
         f_start: [ 1.e-6 ]
-        f_max: [ 1.e-4 ]
-        f_min: [ 1.e-10 ]
+        f_max: [ 1. ]
+        f_min: [ 1. ]
 
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
@@ -97,10 +97,13 @@ data:
           keep_only_keys: ["jpg", "txt"]
           image_transforms:
             - target: torchvision.transforms.ToTensor
-            - target: torchvision.transforms.RandomResizedCrop
+            - target: torchvision.transforms.Resize
               params:
                 size: 768
                 interpolation: bicubic
+            - target: torchvision.transforms.CenterCrop
+              params:
+                size: 768
             # TODO(ahmadki): modify the SD pieline to take chw format (what pytorch nativly uses)
             - target: ldm.data.webdatasets.rearrange_transform
               params:
@@ -134,5 +137,6 @@ lightning:
     target: lightning.pytorch.callbacks.ModelCheckpoint
     params:
       save_top_k: -1
-      every_n_train_steps: 200
+      every_n_train_steps: 1000
       #  train_time_interval: None
+
