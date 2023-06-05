@@ -11,7 +11,9 @@ while [ "$1" != "" ]; do
     shift
 done
 
+mkdir -p ${DOWNLOAD_PATH}
 cd ${DOWNLOAD_PATH}
+
 wget -c http://images.cocodataset.org/zips/val2014.zip
 wget -c http://images.cocodataset.org/annotations/annotations_trainval2014.zip
 

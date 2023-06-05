@@ -386,143 +386,6 @@ class SetupCallback(Callback):
     #         trainer.save_checkpoint(ckpt_path)
 
 
-# PyTorch Lightning callback for ogging images during training and validation of a deep learning model
-class ImageLogger(Callback):
-
-    def __init__(self,
-                 batch_frequency,           # Frequency of batches on which to log images
-                 max_images,                # Maximum number of images to log
-                 clamp=True,                # Whether to clamp pixel values to [-1,1]
-                 increase_log_steps=True,   # Whether to increase frequency of log steps exponentially
-                 rescale=True,              # Whetehr to rescale pixel values to [0,1]
-                 disabled=False,            # Whether to disable logging
-                 log_on_batch_idx=False,    # Whether to log on baych index instead of global step
-                 log_first_step=False,      # Whetehr to log on the first step
-                 log_images_kwargs=None):   # Additional keyword arguments to pass to log_images method
-        super().__init__()
-        self.rescale = rescale
-        self.batch_freq = batch_frequency
-        self.max_images = max_images
-        self.logger_log_images = {
-            # Dictionary of logger classes and their corresponding logging methods
-            pl.loggers.CSVLogger: self._testtube,
-        }
-        # Create a list of exponentially increasing log steps, starting from 1 and ending at batch_frequency
-        self.log_steps = [2**n for n in range(int(np.log2(self.batch_freq)) + 1)]
-        if not increase_log_steps:
-            self.log_steps = [self.batch_freq]
-        self.clamp = clamp
-        self.disabled = disabled
-        self.log_on_batch_idx = log_on_batch_idx
-        self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
-        self.log_first_step = log_first_step
-
-    @rank_zero_only   # Ensure that only the first process in distributed training executes this method
-    def _testtube(self,         # The PyTorch Lightning module
-                  pl_module,    # A dictionary of images to log.
-                  images,       #
-                  batch_idx,    # The batch index.
-                  split         # The split (train/val) on which to log the images
-                  ):
-        # Method for logging images using test-tube logger
-        for k in images:
-            grid = torchvision.utils.make_grid(images[k])
-            grid = (grid + 1.0) / 2.0    # -1,1 -> 0,1; c,h,w
-
-            tag = f"{split}/{k}"
-            # Add image grid to logger's experiment
-            pl_module.logger.experiment.add_image(tag, grid, global_step=pl_module.global_step)
-
-    @rank_zero_only
-    def log_local(self,
-                  save_dir,
-                  split,         # The split (train/val) on which to log the images
-                  images,        # A dictionary of images to log
-                  global_step,   # The global step
-                  current_epoch, # The current epoch.
-                  batch_idx
-                  ):
-        # Method for saving image grids to local file system
-        root = os.path.join(save_dir, "images", split)
-        for k in images:
-            grid = torchvision.utils.make_grid(images[k], nrow=4)
-            if self.rescale:
-                grid = (grid + 1.0) / 2.0    # -1,1 -> 0,1; c,h,w
-            grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
-            grid = grid.numpy()
-            grid = (grid * 255).astype(np.uint8)
-            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(k, global_step, current_epoch, batch_idx)
-            path = os.path.join(root, filename)
-            os.makedirs(os.path.split(path)[0], exist_ok=True)
-            # Save image grid as PNG file
-            Image.fromarray(grid).save(path)
-
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
-    # Function for logging images to both the logger and local file system.
-        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
-        # check if it's time to log an image batch
-        if (self.check_frequency(check_idx) and    # batch_idx % self.batch_freq == 0
-                hasattr(pl_module, "log_images") and callable(pl_module.log_images) and self.max_images > 0):
-            # Get logger type and check if training mode is on
-            logger = type(pl_module.logger)
-
-            is_train = pl_module.training
-            if is_train:
-                pl_module.eval()
-
-            with torch.no_grad():
-                # Get images from log_images method of the pl_module
-                images = pl_module.log_images(batch, split=split, **self.log_images_kwargs)
-
-            # Clip images if specified and convert to CPU tensor
-            for k in images:
-                N = min(images[k].shape[0], self.max_images)
-                images[k] = images[k][:N]
-                if isinstance(images[k], torch.Tensor):
-                    images[k] = images[k].detach().cpu()
-                    if self.clamp:
-                        images[k] = torch.clamp(images[k], -1., 1.)
-
-            # Log images locally to file system
-            self.log_local(pl_module.logger.save_dir, split, images, pl_module.global_step, pl_module.current_epoch,
-                           batch_idx)
-
-            # log the images using the logger
-            logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-            logger_log_images(pl_module, images, pl_module.global_step, split)
-
-            # switch back to training mode if necessary
-            if is_train:
-                pl_module.train()
-
-    # The function checks if it's time to log an image batch
-    def check_frequency(self, check_idx):
-        if ((check_idx % self.batch_freq) == 0 or
-            (check_idx in self.log_steps)) and (check_idx > 0 or self.log_first_step):
-            try:
-                self.log_steps.pop(0)
-            except IndexError as e:
-                print(e)
-                pass
-            return True
-        return False
-
-    # Log images on train batch end if logging is not disabled
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        # if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-        #     self.log_img(pl_module, batch, batch_idx, split="train")
-        pass
-
-    # Log images on validation batch end if logging is not disabled and in validation mode
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if not self.disabled and pl_module.global_step > 0:
-            self.log_img(pl_module, batch, batch_idx, split="val")
-        # log gradients during calibration if necessary
-        if hasattr(pl_module, 'calibrate_grad_norm'):
-            if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
-                self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
-
-
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
 
@@ -760,14 +623,6 @@ if __name__ == "__main__":
                     "lightning_config": lightning_config, # LightningModule configuration
                 }
             },
-            "image_logger": {                             # callback to log image data
-                "target": "main.ImageLogger",
-                "params": {
-                    "batch_frequency": 750,               # how frequently to log images
-                    "max_images": 4,                      # maximum number of images to log
-                    "clamp": True                         # whether to clamp pixel values to [0,1]
-                }
-            },
             "learning_rate_logger": {                     # callback to log learning rate
                 "target": "main.LearningRateMonitor",
                 "params": {
@@ -846,7 +701,6 @@ if __name__ == "__main__":
         # lightning still takes care of proper multiprocessing though
         data.prepare_data()
         data.setup()
-
 
         # Configure learning rate based on the batch size, base learning rate and number of GPUs
         # If scale_lr is true, calculate the learning rate based on additional factors

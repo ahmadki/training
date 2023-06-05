@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-: "${SRC_IMG:=gitlab-master.nvidia.com/dl/dgx/pytorch:22.12-py3-devel}"
-: "${DST_IMG:=gitlab-master.nvidia.com/akiswani/images/mlperf_sd_reference:22.12-py3-devel}"
+: "${SRC_IMG:=nvcr.io/nvidia/pytorch:22.12-py3}"
+: "${DST_IMG:=mlperf_sd:22.12-py3}"
 
 while [ "$1" != "" ]; do
     case $1 in

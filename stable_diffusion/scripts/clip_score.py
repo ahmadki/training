@@ -23,8 +23,9 @@ class CLIPEncoder(nn.Module):
             else:
                 self.pretrained = 'openai'
 
-        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-            self.clip_version, pretrained=self.pretrained, cache_dir=cache_dir)
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(self.clip_version,
+                                                                               pretrained=self.pretrained,
+                                                                               cache_dir=cache_dir)
 
         self.model.eval()
         self.model.to(device)
@@ -66,7 +67,7 @@ def parse_args():
     parser.add_argument(
         "--fname-col",
         type=str,
-        default="id",
+        default="image_id",
         help="column name of the output image",
     )
     parser.add_argument(
@@ -103,7 +104,8 @@ if __name__ == '__main__':
     clip_score = 0.
     count = 0
     for fname, prompt in zip(tqdm(fnames), prompts):
-        img = os.path.join(opt.images_dir, str(fname) + '.png')
+        # img = os.path.join(opt.images_dir, f"COCO_val2014_{fname:012}.jpg")
+        img = os.path.join(opt.images_dir, f"{fname}.png")
         clip_score += encoder.get_clip_score(prompt, img)
         count += 1
 

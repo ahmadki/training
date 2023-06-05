@@ -9,23 +9,29 @@ https://github.com/CompVis/taming-transformers
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 try:
     import lightning.pytorch as pl
     from lightning.pytorch.utilities import rank_zero_info, rank_zero_only
 except:
     import pytorch_lightning as pl
-    from pytorch_lightning.utilities import rank_zero_only, rank_zero_info
+    from pytorch_lightning.utilities import rank_zero_info, rank_zero_only
 
+import os
 import itertools
 from contextlib import contextmanager, nullcontext
 from functools import partial
 
 from einops import rearrange, repeat
+from ldm.modules.fid.inception import InceptionV3
+from ldm.modules.fid.fid_score import compute_statistics_of_path, calculate_frechet_distance
 from ldm.models.autoencoder import *
 from ldm.models.autoencoder import AutoencoderKL, IdentityFirstStage
-from ldm.models.diffusion.ddim import *
+from ldm.models.clip_encoder import CLIPEncoder
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.plms import PLMSSampler
+from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.modules.diffusionmodules.model import *
 from ldm.modules.diffusionmodules.model import Decoder, Encoder, Model
 from ldm.modules.diffusionmodules.openaimodel import *
@@ -38,7 +44,9 @@ from ldm.util import count_params, default, exists, instantiate_from_config, isi
 from omegaconf import ListConfig
 from torch.optim.lr_scheduler import LambdaLR
 from torchvision.utils import make_grid
+from torchvision import transforms
 from tqdm import tqdm
+from PIL import Image
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -93,7 +101,8 @@ class DDPM(pl.LightningModule):
                  make_it_fit=False,
                  ucg_training=None,
                  reset_ema=False,
-                 reset_num_ema_updates=False):
+                 reset_num_ema_updates=False,
+                 validation_config=None):
         super().__init__()
         assert parameterization in ["eps", "x0", "v"], 'currently only supporting "eps" and "x0" and "v"'
         self.parameterization = parameterization
@@ -168,6 +177,50 @@ class DDPM(pl.LightningModule):
         self.ucg_training = ucg_training or dict()
         if self.ucg_training:
             self.ucg_prng = np.random.RandomState()
+
+        self.to_pil_image = transforms.ToPILImage()
+
+        # Validation config
+        self.inception = None
+        self.clip_encoder = None
+        self.m1 = None
+        self.s1 = None
+        self.validation_save_images = False
+        self.validation_run_fid = False
+        self.validation_run_clip = False
+        self.validation_inecption_activations = []
+        self.validation_clip_scores = []
+
+        if validation_config is not None:
+            self.validation_save_images = validation_config["save_images"]["enabled"]
+            self.validation_run_fid = validation_config["fid"]["enabled"]
+            self.validation_run_clip = validation_config["clip"]["enabled"]
+
+        if self.validation_save_images or self.validation_run_fid or self.validation_run_clip:
+            if validation_config["sampler"] == "plms":
+                self.sampler = PLMSSampler(self)
+            elif validation_config["sampler"] == "dpm":
+                self.sampler = DPMSolverSampler(self)
+            elif validation_config["sampler"] == "ddim":
+                self.sampler = DDIMSampler(self)
+            else:
+                raise NotImplementedError(f"Sampler {self.sampler} not yet supported")
+
+            self.validation_scale = validation_config["scale"]
+            self.validation_sampler_steps = validation_config["steps"]
+            self.validation_ddim_eta = validation_config["ddim_eta"]
+            self.prompt_key = validation_config["prompt_key"]
+            self.image_fname_key = validation_config["image_fname_key"]
+
+            if self.validation_save_images:
+                self.validation_base_output_dir = validation_config["save_images"]["base_output_dir"]
+
+            if self.validation_run_fid:
+                self.fid_gt_path = validation_config["fid"]["gt_path"]
+
+            if self.validation_run_clip:
+                self.clip_version = validation_config["clip"]["clip_version"]
+
 
     def register_schedule(self,
                           given_betas=None,
@@ -510,14 +563,92 @@ class DDPM(pl.LightningModule):
 
         return loss
 
+    # TODO(ahmadki): lightning will pad the last batch, which will cause duplicates
+    # samples after all_gather, which might scew the FID and CLIP scores
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        _, loss_dict_no_ema = self.shared_step(batch)
-        with self.ema_scope():
-            _, loss_dict_ema = self.shared_step(batch)
-            loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
-        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        prompts = batch[self.prompt_key]
+        fnames = batch[self.image_fname_key]
+
+        # TODO(ahmadki): x_T ?
+
+        if self.validation_save_images or self.validation_run_fid or self.validation_run_clip:
+            with self.ema_scope("validation"):
+                uc = None
+                if self.validation_scale != 1.0:
+                    uc = self.get_learned_conditioning(len(prompts) * [""])
+                c = self.get_learned_conditioning(prompts)
+                shape = [self.channels, self.image_size, self.image_size]
+                samples, _ = self.sampler.sample(S=self.validation_sampler_steps,
+                                                 conditioning=c,
+                                                 batch_size=len(prompts),
+                                                 shape=shape,
+                                                 verbose=False,
+                                                 unconditional_guidance_scale=self.validation_scale,
+                                                 unconditional_conditioning=uc,
+                                                 eta=self.validation_ddim_eta,
+                                                 x_T=None)
+
+                x_samples = self.decode_first_stage(samples)
+                x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
+
+        if self.validation_save_images:
+            output_dir = os.path.join(self.validation_base_output_dir, f"epoch={self.current_epoch:06}-step={self.global_step:09}")
+            os.makedirs(output_dir, exist_ok=True)
+            for fname, x_sample in zip(fnames, x_samples):
+                x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                img = Image.fromarray(x_sample.astype(np.uint8))
+                img.save(os.path.join(output_dir, f"{fname}.png"))
+
+        if self.validation_run_fid:
+            if self.inception is None:
+                block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+                self.inception = InceptionV3([block_idx]).cuda()
+                self.inception.eval()
+            pred = self.inception(x_samples)[0].squeeze(3).squeeze(2)
+            self.validation_inecption_activations.append(pred)
+
+        if self.validation_run_clip:
+            if self.clip_encoder is None:
+                self.clip_encoder = CLIPEncoder(clip_version=self.clip_version)
+            for prompt, x_sampler in zip(prompts, x_samples):
+                # TODO(ahmadki): this is not efficient but clip model expects a PIL image,
+                # modify the clip encoder so we can use raw tensors instead
+                img = self.to_pil_image(x_sampler)
+                score = self.clip_encoder.get_clip_score(prompt, img)
+                self.validation_clip_scores.append(score)
+
+
+    def on_validation_epoch_end(self):
+        if self.validation_run_fid:
+            inception_activations = torch.cat(self.validation_inecption_activations, 0)
+            inception_activations = self.all_gather(inception_activations)
+            inception_activations = inception_activations.view(-1, inception_activations.shape[2])
+
+            # Ground truth
+            if self.m1 is None or self.s1 is None:
+                self.m1, self.s1 = compute_statistics_of_path(self.fid_gt_path, self.inception, 50, 2048, self.device, 4)
+
+            # Generated images
+            m2 = np.mean(inception_activations.detach().cpu().numpy(), axis=0)
+            s2 = np.cov(inception_activations.detach().cpu().numpy(), rowvar=False)
+
+            fid_value = calculate_frechet_distance(self.m1, self.s1, m2, s2)
+
+            self.log("FID", fid_value)
+            print(f"[validation][{self.global_step}] FID: {fid_value}") # TODO(ahmadki): remove
+            self.validation_inecption_activations.clear()  # free memory
+
+        if self.validation_run_clip:
+            clip_scores = torch.cat(self.validation_clip_scores, 0)
+            clip_scores = self.all_gather(clip_scores)
+            clip_scores = clip_scores.view(-1, clip_scores.shape[2])
+            clip_score = np.mean(clip_scores.detach().cpu().numpy())
+
+            self.log("CLIP", clip_score)
+            print(f"[validation][{self.global_step}] CLIP: {clip_score}") # TODO(ahmadki): remove
+            self.validation_clip_scores.clear()  # free memory
+
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:

@@ -22,6 +22,24 @@ model:
     load_unet: False
     load_encoder: True
 
+    validation_config:
+      sampler: "ddim" # plms, ddim, dpm
+      steps: 50
+      scale: 8.0
+      ddim_eta: 0.0
+      prompt_key: "caption"
+      image_fname_key: "image_id"
+
+      save_images:
+        enabled: True
+        base_output_dir: "./nogit/inference/"
+      fid:
+        enabled: True
+        gt_path: "/datasets/coco2014/val2014_768x768_30k/"
+      clip:
+        enabled: True
+        clip_version: "ViT-H-14"
+
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
@@ -83,10 +101,10 @@ model:
         layer: "penultimate"
 
 data:
-    target: ldm.data.webdatasets.DataModuleFromWebDataloaders
+    target: ldm.data.composable_data_module.ComposableDataModule
     params:
       train:
-        target: ldm.data.webdatasets.build_webdataloader
+        target: ldm.data.webdatasets.build_dataloader
         params:
           urls: /datasets/laion2B-en-aesthetic/{00000..05247}.tar
           batch_size: 8
@@ -109,7 +127,7 @@ data:
               params:
                 size: 768
             # TODO(ahmadki): modify the SD pieline to take chw format (what pytorch nativly uses)
-            - target: ldm.data.webdatasets.rearrange_transform
+            - target: ldm.data.utils.rearrange_transform
               params:
                 pattern: 'c h w -> h w c'
           # txt_transforms:
@@ -117,6 +135,16 @@ data:
           # cache_size:
           # cache_dir:
           persistent_workers: True
+
+      validation:
+        target: ldm.data.tsv.build_dataloader
+        params:
+          annotations_file: "/datasets/coco2014/val2014_30k.tsv"
+          keys: ["image_id", "id", "caption"]
+          batch_size: 50
+          shuffle: False
+          num_workers: 4
+
 
 lightning:
   trainer:
@@ -128,7 +156,7 @@ lightning:
     log_every_n_steps: 5
     enable_progress_bar: True
     max_steps: 10000000000000
-    # val_check_interval:
+    val_check_interval: 1000
     # inference_mode:
     # resume_from_checkpoint:
     enable_checkpointing: True
@@ -143,4 +171,3 @@ lightning:
       save_top_k: -1
       every_n_train_steps: 1000
       #  train_time_interval: None
-
